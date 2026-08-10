@@ -1,0 +1,32 @@
+[package]
+name = "ds4-sniffer"
+version = "0.1.0"
+authors = ["renanmachad <renanmachadopinho@gmail.com>"]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# Mantém a sua base estável v1.1.2
+esp-hal = { version = "1.1.2", features = ["unstable"] }
+esp-println = { version = "0.17.0", features = ["esp32"] }
+esp-backtrace = { version = "0.19.0", features = ["esp32", "panic-handler", "println"] }
+esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32"] }
+esp-rom-sys = { version = "0.1.4", features = ["esp32"] }
+
+# CORREÇÃO: Injetado a feature "unstable" exigida pela beta.0
+esp-radio = { version = "1.0.0-beta.0", default-features = false, features = ["esp32", "esp-now", "unstable"] }
+
+# CORREÇÃO: Força o rtos a ler estritamente o seu chip esp32
+esp-rtos = { version = "0.3.0", default-features = false, features = ["esp32"] }
+
+[profile.dev]
+opt-level = "s"
+
+[profile.release]
+codegen-units = 1
+debug = 2
+debug-assertions = false
+incremental = false
+lto = 'fat'
+opt-level = 's'
+overflow-checks = false
