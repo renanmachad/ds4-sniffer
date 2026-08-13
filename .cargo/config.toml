@@ -1,16 +1,13 @@
-[target.xtensa-esp32-none-elf]
-runner = "espflash flash --monitor"
-
-
-[env]
-ESP_LOG="info"
-
 [build]
-rustflags = [
-  "-C", "link-arg=-nostartfiles",
-]
-
 target = "xtensa-esp32-none-elf"
 
+[target.xtensa-esp32-none-elf]
+runner = "espflash flash --monitor"
+rustflags = [
+  "-C", "link-arg=-Tlinkall.x",
+  "-C", "link-arg=-Trom_functions.x",
+]
+
 [unstable]
-build-std = ["core"]
+# ESTA LINHA CORRIGE O ERRO DA SERDE_CORE: reconstrói e injeta o core/alloc nativo em todas as crates
+build-std = ["core", "alloc"]
