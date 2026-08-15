@@ -1,6 +1,8 @@
 #![no_std]
 #![no_main]
 
+mod can;
+
 use core::fmt::Display;
 use core::mem::size_of;
 use core::slice::from_raw_parts;
