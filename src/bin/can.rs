@@ -1,8 +1,9 @@
 #![no_std]
 #![no_main]
 
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use embedded_can::{Frame, Id};
+use embedded_hal::spi::SpiDevice;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use esp_hal::delay::Delay;
 use esp_hal::gpio::{Level, Output};
@@ -11,7 +12,16 @@ use esp_hal::spi::Mode;
 use esp_hal::time::Rate;
 use esp_println::logger::init_logger_from_env;
 use esp_println::println;
+use mcp2515::regs::{CanStat, OpMode, Rec, Tec};
 use mcp2515::MCP2515;
+
+/// Seguranca: por padrao NUNCA sai do listen-only (nao ACKa nem gera error frames no carro).
+/// Mude para `true` so depois de validar o bitrate/cristal em listen-only.
+const ENABLE_NORMAL_MODE: bool = false;
+/// Tempo em listen-only (com frames validos) antes de tentar o modo normal.
+const LISTEN_SECS: u64 = 10;
+/// Se o TEC passar disso em modo normal, volta para listen-only (error warning = 96).
+const TEC_ABORT: u8 = 96;
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
@@ -68,7 +78,8 @@ async fn main(_spawner: embassy_executor::Spawner) {
     let result = can.init(
         &mut delay,
         mcp2515::Settings {
-            mode: mcp2515::regs::OpMode::ListenOnly,
+            // Sempre sobe em listen-only; a troca para Normal e feita depois, com checagens.
+            mode: OpMode::ListenOnly,
             can_speed: mcp2515::CanSpeed::Kbps500,
             mcp_speed: mcp2515::McpSpeed::MHz8,
             clkout_en: false,
@@ -84,22 +95,78 @@ async fn main(_spawner: embassy_executor::Spawner) {
     }
 
     println!("MCP2515 inicializado com sucesso!");
+    log_status(&mut can, "apos init");
     println!();
     println!("Aguardando mensagens...");
 
-    let mut frame_count = 0;
+    let start = Instant::now();
+    let mut last_status = Instant::now();
+    let mut frame_count: u64 = 0;
+    let mut read_errs: u64 = 0;
+    let mut normal = false;
     loop {
         match can.read_message() {
             Ok(frame) => {
                 frame_count += 1;
-                println!("Frame {}: {:?}", frame_count, frame);
                 print_frame(frame_count, &frame);
             }
-            Err(e) => {
-                println!("Erro ao ler mensagem: {:?}", e);
+            // Sem mensagem pendente tambem cai aqui; so contamos para nao inundar a serial.
+            Err(_) => read_errs += 1,
+        }
+
+        if last_status.elapsed() >= Duration::from_secs(1) {
+            last_status = Instant::now();
+            println!("[status] frames={} read_errs={}", frame_count, read_errs);
+            let tec = log_status(&mut can, if normal { "NORMAL" } else { "LISTEN" });
+
+            // Protecao: erros subindo em modo normal -> volta para listen-only.
+            if normal && tec.unwrap_or(0) > TEC_ABORT {
+                println!("TEC alto em modo normal -> voltando para ListenOnly");
+                let _ = can.set_mode(OpMode::ListenOnly);
+                normal = false;
             }
         }
+
+        // Troca para modo normal (sem enviar nada) so se ja recebemos frames validos.
+        if ENABLE_NORMAL_MODE
+            && !normal
+            && frame_count > 0
+            && start.elapsed() >= Duration::from_secs(LISTEN_SECS)
+        {
+            println!("Trocando para modo NORMAL (somente ACK, sem transmitir)...");
+            match can.set_mode(OpMode::Normal) {
+                Ok(()) => normal = true,
+                Err(e) => println!("Falha ao entrar em modo normal: {:?}", e),
+            }
+            log_status(&mut can, "apos set_mode(Normal)");
+        }
+
         Timer::after(Duration::from_millis(1)).await;
+    }
+}
+
+/// Le CANSTAT (modo real do chip), TEC e REC (contadores de erro de TX/RX) e imprime.
+/// Retorna o TEC. TEC/REC subindo em modo normal => bitrate/cristal errado ou problema eletrico.
+fn log_status<SPI: SpiDevice>(can: &mut MCP2515<SPI>, tag: &str) -> Option<u8> {
+    let stat: Result<CanStat, _> = can.read_register();
+    let tec: Result<Tec, _> = can.read_register();
+    let rec: Result<Rec, _> = can.read_register();
+    match (stat, tec, rec) {
+        (Ok(stat), Ok(tec), Ok(rec)) => {
+            let tec = tec.into_bytes()[0];
+            println!(
+                "[{}] opmod={:?} TEC={} REC={}",
+                tag,
+                stat.opmod(),
+                tec,
+                rec.into_bytes()[0]
+            );
+            Some(tec)
+        }
+        _ => {
+            println!("[{}] falha ao ler CANSTAT/TEC/REC (SPI?)", tag);
+            None
+        }
     }
 }
 
