@@ -3,6 +3,7 @@
 
 use embassy_time::{Duration, Instant, Timer};
 use embedded_can::{Frame, Id};
+use embedded_hal::delay::DelayNs;
 use embedded_hal::spi::SpiDevice;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use esp_hal::delay::Delay;
@@ -67,7 +68,28 @@ async fn main(_spawner: embassy_executor::Spawner) {
     .with_mosi(peripherals.GPIO23)
     .with_miso(peripherals.GPIO19);
 
-    let spi_dev = ExclusiveDevice::new(spi, cs, delay).unwrap();
+    let mut spi_dev = ExclusiveDevice::new(spi, cs, delay).unwrap();
+
+    // Teste de SPI bruto (antes da crate): RESET e leitura de CANSTAT/CANCTRL.
+    // Apos o reset o MCP2515 responde CANSTAT=0x80 e CANCTRL=0x87.
+    let mut rst = [0xC0u8];
+    let _ = spi_dev.transfer_in_place(&mut rst);
+    delay.delay_ms(10);
+    let mut canstat = [0x03u8, 0x0E, 0x00];
+    let _ = spi_dev.transfer_in_place(&mut canstat);
+    let mut canctrl = [0x03u8, 0x0F, 0x00];
+    let _ = spi_dev.transfer_in_place(&mut canctrl);
+    println!(
+        "SPI bruto: CANSTAT={:02X} (esperado 80) CANCTRL={:02X} (esperado 87)",
+        canstat[2], canctrl[2]
+    );
+    if canstat[2] != 0x80 || canctrl[2] != 0x87 {
+        println!("MCP2515 NAO responde na SPI. Veja fios SCK/SI/SO/CS, VCC, GND e o divisor do SO.");
+        println!("FF = MISO preso em 1 (sem fio/CS); 00 = MISO preso em 0 (sem resposta).");
+        loop {
+            Timer::after(Duration::from_secs(5)).await;
+        }
+    }
 
     let mut can = MCP2515::new(spi_dev);
 
