@@ -21,8 +21,8 @@ use mcp2515::MCP2515;
 const ENABLE_NORMAL_MODE: bool = false;
 /// Tempo em listen-only (com frames validos) antes de tentar o modo normal.
 const LISTEN_SECS: u64 = 10;
-/// Se o TEC passar disso em modo normal, volta para listen-only (error warning = 96).
-const TEC_ABORT: u8 = 96;
+/// Se TEC OU REC passar disso em modo normal, volta para listen-only (error warning = 96).
+const ERR_ABORT: u8 = 96;
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
@@ -139,11 +139,12 @@ async fn main(_spawner: embassy_executor::Spawner) {
         if last_status.elapsed() >= Duration::from_secs(1) {
             last_status = Instant::now();
             println!("[status] frames={} read_errs={}", frame_count, read_errs);
-            let tec = log_status(&mut can, if normal { "NORMAL" } else { "LISTEN" });
+            let (tec, rec) = log_status(&mut can, if normal { "NORMAL" } else { "LISTEN" })
+                .unwrap_or((0, 0));
 
-            // Protecao: erros subindo em modo normal -> volta para listen-only.
-            if normal && tec.unwrap_or(0) > TEC_ABORT {
-                println!("TEC alto em modo normal -> voltando para ListenOnly");
+            // Protecao: erros subindo (TX ou RX) em modo normal -> volta para listen-only.
+            if normal && (tec > ERR_ABORT || rec > ERR_ABORT) {
+                println!("TEC/REC alto em modo normal -> voltando para ListenOnly");
                 let _ = can.set_mode(OpMode::ListenOnly);
                 normal = false;
             }
@@ -168,22 +169,17 @@ async fn main(_spawner: embassy_executor::Spawner) {
 }
 
 /// Le CANSTAT (modo real do chip), TEC e REC (contadores de erro de TX/RX) e imprime.
-/// Retorna o TEC. TEC/REC subindo em modo normal => bitrate/cristal errado ou problema eletrico.
-fn log_status<SPI: SpiDevice>(can: &mut MCP2515<SPI>, tag: &str) -> Option<u8> {
+/// Retorna (TEC, REC). TEC/REC subindo em modo normal => bitrate/cristal errado ou problema eletrico.
+fn log_status<SPI: SpiDevice>(can: &mut MCP2515<SPI>, tag: &str) -> Option<(u8, u8)> {
     let stat: Result<CanStat, _> = can.read_register();
     let tec: Result<Tec, _> = can.read_register();
     let rec: Result<Rec, _> = can.read_register();
     match (stat, tec, rec) {
         (Ok(stat), Ok(tec), Ok(rec)) => {
             let tec = tec.into_bytes()[0];
-            println!(
-                "[{}] opmod={:?} TEC={} REC={}",
-                tag,
-                stat.opmod(),
-                tec,
-                rec.into_bytes()[0]
-            );
-            Some(tec)
+            let rec = rec.into_bytes()[0];
+            println!("[{}] opmod={:?} TEC={} REC={}", tag, stat.opmod(), tec, rec);
+            Some((tec, rec))
         }
         _ => {
             println!("[{}] falha ao ler CANSTAT/TEC/REC (SPI?)", tag);
